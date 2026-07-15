@@ -56,14 +56,27 @@ class HELM(nn.Module):
         byol_view1: torch.Tensor,
         byol_view2: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
+        # Run the encoder ONCE on the plain view; classification + graph branches
+        # both read from this single z_hierarchy.
         z_hierarchy, _ = self.encoder(x)
 
-        labeled_z_hierarchy = z_hierarchy[:num_labeled]
-        cls_logits = self.classification_branch(labeled_z_hierarchy)
-        L_s = self.classification_branch.compute_loss(cls_logits, targets)
+        # NOTE: at low labeling fractions (e.g. the paper's 1%/5% settings), a batch
+        # can legitimately contain ZERO labeled samples -- BCE over an empty tensor
+        # is NaN (0/0) regardless of shape, so we must skip L_s/L_g entirely rather
+        # than compute them, in that case.
+        zero = z_hierarchy.sum() * 0.0
+        if num_labeled > 0:
+            labeled_z_hierarchy = z_hierarchy[:num_labeled]
+            cls_logits = self.classification_branch(labeled_z_hierarchy)
+            L_s = self.classification_branch.compute_loss(cls_logits, targets)
 
-        graph_logits = self.graph_branch(z_hierarchy, self.edge_index)
-        L_g = self.graph_branch.compute_loss(graph_logits, targets, num_labeled=num_labeled)
+            graph_logits = self.graph_branch(z_hierarchy, self.edge_index)
+            L_g = self.graph_branch.compute_loss(graph_logits, targets, num_labeled=num_labeled)
+        else:
+            cls_logits = torch.empty((0, self.num_labels), device=x.device)
+            graph_logits = self.graph_branch(z_hierarchy, self.edge_index)  # still run -- unlabeled rows still benefit from graph message-passing
+            L_s = zero
+            L_g = zero
 
         L_b = self.byol_branch(byol_view1, byol_view2)
 
