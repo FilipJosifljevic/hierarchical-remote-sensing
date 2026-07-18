@@ -49,7 +49,31 @@ class HierarchyTokenViT(nn.Module):
         self.hierarchy_pos_embed = nn.Parameter(hierarchy_pos_embed_init)  # [1, M, d]
         self.patch_pos_embed = nn.Parameter(patch_pos)  # [1, Np, d]
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _last_block_forward_with_attention(self, block, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        attn_module = block.attn
+        normed = block.norm1(x)
+
+        B, N, C = normed.shape
+        qkv = attn_module.qkv(normed).reshape(B, N, 3, attn_module.num_heads, attn_module.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+        q, k = attn_module.q_norm(q), attn_module.k_norm(k)
+        q = q * attn_module.scale
+        attn_weights = (q @ k.transpose(-2, -1)).softmax(dim=-1)  # [B, num_heads, N, N] -- NOT detached
+        attn_dropped = attn_module.attn_drop(attn_weights)
+
+        attn_out = (attn_dropped @ v).transpose(1, 2).reshape(B, N, attn_module.attn_dim)
+        attn_out = attn_module.norm(attn_out)
+        attn_out = attn_module.proj(attn_out)
+        attn_out = attn_module.proj_drop(attn_out)
+
+        x = x + block.drop_path1(block.ls1(attn_out))
+        x = x + block.drop_path2(block.ls2(block.mlp(block.norm2(x))))
+        return x, attn_weights
+
+    def forward(
+        self, x: torch.Tensor, return_hierarchy_attention: bool = False
+    ):
+        
         B = x.shape[0]
         Tp = self.patch_embed(x)  # [B, Np, d]
         Tp = Tp + self.patch_pos_embed
@@ -59,9 +83,21 @@ class HierarchyTokenViT(nn.Module):
         T = torch.cat([Tcls, Tp], dim=1)  # [B, M+Np, d]
         T = self.patch_drop(T)
         T = self.norm_pre(T)
-        T = self.blocks(T)
+
+        if not return_hierarchy_attention:
+            T = self.blocks(T)
+            T = self.norm(T)
+            z_hierarchy = T[:, : self.M, :]
+            z_patch = T[:, self.M :, :]
+            return z_hierarchy, z_patch
+
+        for block in self.blocks[:-1]:
+            T = block(T)
+        T, attn_weights = self._last_block_forward_with_attention(self.blocks[-1], T)
         T = self.norm(T)
 
         z_hierarchy = T[:, : self.M, :]
         z_patch = T[:, self.M :, :]
-        return z_hierarchy, z_patch
+
+        hierarchy_attn = attn_weights[:, :, : self.M, self.M :].mean(dim=1)  # [B, M, Np], avg over heads
+        return z_hierarchy, z_patch, hierarchy_attn
