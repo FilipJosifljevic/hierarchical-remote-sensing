@@ -1,4 +1,4 @@
 /data/
-outputs/checkpoints/
+/outputs/
 __pycache__/
 *.pyc
