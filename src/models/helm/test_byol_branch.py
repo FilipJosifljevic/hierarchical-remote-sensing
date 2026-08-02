@@ -1,7 +1,3 @@
-"""
-Standalone smoke test for the BYOL branch. Run from src/models/helm/:
-    python3 test_byol_branch.py
-"""
 import torch
 
 from encoder import HierarchyTokenViT

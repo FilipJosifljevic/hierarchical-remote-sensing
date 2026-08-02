@@ -1,26 +1,3 @@
-"""
-UCM-HMLC: hierarchical multi-label UC Merced Land Use dataset.
-
-Images: original UC Merced Land Use images (21 folders x 100 images), e.g. from
-    https://github.com/masakulaYOU/UCMerced_LandUse
-Labels: hierarchical multi-label annotations released by Stoimchev et al., built on
-    the CORINE Land Cover (CLC 2018) nomenclature, hosted at
-    https://huggingface.co/datasets/marjandl/UCM-HMLC
-    (raw file: UCM-HMLC.txt, tab-separated, 2101 rows: image_path + 30 binary label
-    columns spanning leaf + intermediate + top levels of the hierarchy, no fixed
-    column grouping by level -- see `infer_hierarchy` below.)
-
-This dataset class:
-  1. Loads the tsv label file (local cache, or downloads once from HF and caches it).
-  2. Matches each row's image_path to the corresponding file under `image_root`
-     (searching the flat UCMerced folder-of-folders layout).
-  3. Exposes the FULL label vector (all 30 nodes: leaf + intermediate + top) per
-     sample, since HELM-style approaches supervise every level of the hierarchy,
-     not just the leaves.
-  4. Infers parent/depth for every label node directly from the label matrix
-     (see src/utils/hierarchy.py) instead of hand-encoding the tree, and exposes
-     it via `self.parent` / `self.depth` / `self.node_names`.
-"""
 import os
 import sys
 from pathlib import Path
@@ -38,11 +15,6 @@ UCM_HMLC_HF_URL = (
     "https://huggingface.co/datasets/marjandl/UCM-HMLC/resolve/main/UCM-HMLC.txt"
 )
 
-# The 17 canonical leaf-level multi-label attributes for UCM (Chaudhuri et al.),
-# used here (rather than positional column slicing) to tell the hierarchy inference
-# which columns are leaves vs. category (intermediate/top) nodes -- this matters
-# because a sibling leaf can look like a false "parent" of another leaf if they
-# happen to always co-occur in this small a dataset (see src/utils/hierarchy.py).
 UCM_LEAF_NAMES = {
     "airplane", "bare-soil", "buildings", "cars", "chaparral", "court", "dock",
     "field", "grass", "mobile-home", "pavement", "sand", "sea", "ship",
@@ -51,7 +23,6 @@ UCM_LEAF_NAMES = {
 
 
 def _download_label_file(dest_path: str) -> None:
-    """Download the UCM-HMLC.txt annotation file from HuggingFace and cache it locally."""
     import urllib.request
 
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
@@ -67,16 +38,6 @@ class UCMHMLCDataset(Dataset):
         transform: Optional[Callable] = None,
         download: bool = True,
     ):
-        """
-        Args:
-            image_root: path to the folder containing the 21 UCM class subfolders
-                        (e.g. ".../UCMerced_LandUse/Images").
-            label_file: path to a locally cached UCM-HMLC.txt. If None, defaults to
-                        `<image_root>/../UCM-HMLC.txt` and downloads it there if
-                        `download=True` and it doesn't exist yet.
-            transform: torchvision-style image transform.
-            download: whether to auto-download the label file if missing.
-        """
         self.image_root = image_root
         self.transform = transform
 
@@ -92,8 +53,6 @@ class UCMHMLCDataset(Dataset):
 
         image_paths, label_matrix, node_names = self._parse_label_file(label_file)
 
-        # Match each row to an actual file on disk (UCM images are grouped in
-        # per-class folders, e.g. "agricultural/agricultural00.tif").
         self._index_images_on_disk()
 
         self.samples: List[Tuple[str, np.ndarray]] = []
@@ -107,24 +66,13 @@ class UCMHMLCDataset(Dataset):
         if missing:
             print(f"Warning: {missing}/{len(image_paths)} labeled images not found under {image_root}")
 
-        self.node_names = node_names  # all 30 label columns, in file order
+        self.node_names = node_names 
         self.num_nodes = len(node_names)
-
-        # Infer hierarchy (parent + depth per node) directly from the label matrix.
-        # Restrict valid "ancestor" candidates to non-leaf (category) columns so that
-        # two sibling leaves that happen to always co-occur (e.g. sand+sea in beach
-        # images) can't be mistaken for a parent-child pair.
         unknown_leaves = UCM_LEAF_NAMES - set(node_names)
         if unknown_leaves:
             print(f"Warning: expected leaf names not found in data columns: {unknown_leaves}")
         category_names = set(node_names) - UCM_LEAF_NAMES
 
-        # One confirmed manual override: 'field' is the ONLY leaf contributing to
-        # 'Arable Land' / 'Agricultural Areas' in this dataset, so all three have
-        # IDENTICAL positive-row sets (verified with scripts/diagnose_hierarchy.py --
-        # 103/103 rows, zero difference either direction) and are indistinguishable
-        # from data alone. We assert the intended chain from the CORINE nomenclature
-        # instead of leaving all three stranded as separate roots.
         manual_overrides = {"field": "Arable Land", "Arable Land": "Agricultural Areas"}
 
         self.parent, self.depth = build_hierarchy(
@@ -139,7 +87,6 @@ class UCMHMLCDataset(Dataset):
             lines = [line.rstrip("\n") for line in f]
 
         header = lines[0].split("\t")
-        # header[0] is empty (row-index column), header[1] is "image_path", rest are labels
         node_names = header[2:]
 
         image_paths = []
@@ -177,5 +124,5 @@ class UCMHMLCDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         if self.transform:
             image = self.transform(image)
-        labels = torch.tensor(labels, dtype=torch.float32)  # multi-label -> float for BCE
+        labels = torch.tensor(labels, dtype=torch.float32)
         return image, labels

@@ -1,8 +1,3 @@
-"""
-Standalone smoke test for the fully assembled HELM model.
-Run from src/models/helm/:
-    python3 test_helm_model.py
-"""
 import torch
 
 from helm_model import HELM
@@ -12,8 +7,6 @@ from src.utils.hierarchy import build_edge_index
 
 torch.manual_seed(0)
 
-# Small fake hierarchy for a fast test (swap in your real dataset.parent/node_names
-# once this passes, same as we did for the graph branch earlier).
 parent = {"trees": "Forest_top", "chaparral": "Shrub", "Shrub": "Forest_top"}
 node_names = ["trees", "chaparral", "Shrub", "Forest_top", "Water_top"]
 M = len(node_names)
@@ -30,7 +23,7 @@ model = HELM(
     byol_predictor_hidden_dim=64,
 )
 
-B, Bl = 6, 4  # total batch / labeled rows (must be the first Bl rows)
+B, Bl = 6, 4 
 x = torch.randn(B, 3, 224, 224)
 targets = torch.randint(0, 2, (Bl, M)).float()
 byol_view1 = torch.randn(B, 3, 224, 224)
@@ -57,7 +50,6 @@ assert model.byol_branch.predictor[0].weight.grad is not None, "byol predictor d
 assert model.byol_branch.target_encoder.hierarchy_tokens.grad is None, "target network must NOT get gradients"
 print("Gradient flow into ALL branches (and NOT into BYOL's target network): OK")
 
-# Simulate an actual optimizer step before checking the EMA update
 with torch.no_grad():
     for p in model.encoder.parameters():
         p.add_(torch.randn_like(p) * 0.01)

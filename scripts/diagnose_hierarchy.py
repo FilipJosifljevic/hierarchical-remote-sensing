@@ -1,11 +1,3 @@
-"""
-Quick diagnostic for the 'field' / 'Arable Land' orphan-root anomaly.
-
-Run from anywhere once you have the label file downloaded (it's cached at
-<image_root>/../UCM-HMLC.txt after the first check_ucm_temp.py run):
-
-    python scripts/diagnose_hierarchy.py path/to/UCM-HMLC.txt
-"""
 import sys
 
 import numpy as np

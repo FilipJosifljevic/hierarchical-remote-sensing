@@ -18,10 +18,9 @@ def infer_parents(
     ancestors: Dict[str, List[str]] = {name: [] for name in label_names}
     for i, j in itertools.permutations(range(n_labels), 2):
         if not positive_sets[i]:
-            continue  # label never appears; skip
+            continue
         if candidate_ancestor_names is not None and label_names[j] not in candidate_ancestor_names:
-            continue  # j is not allowed to be anyone's ancestor (e.g. it's a sibling leaf)
-        # i is a child of j if every row with i=1 also has j=1, and j is strictly broader
+            continue
         if positive_sets[i] <= positive_sets[j] and positive_sets[j] != positive_sets[i]:
             ancestors[label_names[i]].append(label_names[j])
     return ancestors
@@ -41,8 +40,6 @@ def direct_parent(
             parent[label] = closest[0]
         else:
             ties[label] = closest
-            # deterministic fallback so depth/tree-building can still proceed:
-            # pick alphabetically first candidate, but flag it via `ties`.
             parent[label] = closest[0]
     return parent, ties
 
