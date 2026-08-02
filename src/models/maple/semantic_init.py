@@ -32,7 +32,7 @@ class HierarchicalSemanticInitializer(nn.Module):
         with torch.no_grad():
             raw_embeddings = sentence_model.encode(
                 sentences, convert_to_tensor=True, show_progress_bar=False
-            )
+            ).cpu()
 
         sentence_dim = raw_embeddings.shape[1]
         self.register_buffer("raw_embeddings", raw_embeddings.clone().float())
