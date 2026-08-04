@@ -15,6 +15,13 @@ def main():
     parser.add_argument("--image_root", type=str, default=None)
     parser.add_argument("--labels_csv", type=str, default=None)
     parser.add_argument("--ucm_image_root", type=str, default="data/raw/UCMerced_LandUse/Images")
+    parser.add_argument("--high_violation_leaves", type=str, required=True,
+                         help="comma-separated leaf names with high violation rates, "
+                              "from check_hierarchy_consistency.py's output FOR THIS DATASET "
+                              "(e.g. 'buildings,court,grass'). Do not reuse another dataset's list.")
+    parser.add_argument("--zero_violation_leaves", type=str, required=True,
+                         help="comma-separated leaf names with ~0%% violation rate, "
+                              "from check_hierarchy_consistency.py's output FOR THIS DATASET")
     args = parser.parse_args()
 
     if args.dataset == "ucm":
@@ -60,9 +67,8 @@ def main():
         print(f"{leaf:<20} {n_images:>10} {avg_roots:>35.3f}{flag}")
 
     print("\n--- Direct comparison: flagged high-violation leaves vs. zero-violation leaves ---")
-    high_violation_leaves = ["buildings", "court", "grass", "Arable Land"]
-    zero_violation_leaves = ["airplane", "bare-soil", "chaparral", "dock", "mobile-home",
-                              "pavement", "sea", "ship", "storage tanks", "trees", "water"]
+    high_violation_leaves = [x.strip() for x in args.high_violation_leaves.split(",")]
+    zero_violation_leaves = [x.strip() for x in args.zero_violation_leaves.split(",")]
 
     results_dict = {leaf: avg for leaf, _, avg in results}
     high_vals = [results_dict[l] for l in high_violation_leaves if l in results_dict]
