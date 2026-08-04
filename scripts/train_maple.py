@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import json
 from pathlib import Path
 
 import torch
@@ -146,6 +147,11 @@ def main():
 
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr)
 
+    best_auprc = -1.0
+    best_epoch = -1
+    best_metrics = None
+    final_metrics = None
+
     for epoch in range(args.start_epoch, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
@@ -170,6 +176,11 @@ def main():
             metrics = evaluate(model, test_loader, args.device)
             print(f"  [eval @ epoch {epoch}] AUPRC: {metrics['auprc']:.4f}, "
                   f"Ranking Loss: {metrics['ranking_loss']:.4f}")
+            final_metrics = {"epoch": epoch, **metrics}
+            if metrics["auprc"] > best_auprc:
+                best_auprc = metrics["auprc"]
+                best_epoch = epoch
+                best_metrics = {"epoch": epoch, **metrics}
 
         if epoch % args.checkpoint_every == 0 and epoch != args.epochs:
             interim_path = os.path.join(
@@ -185,6 +196,23 @@ def main():
     )
     torch.save(model.state_dict(), ckpt_path)
     print(f"\nSaved checkpoint to {ckpt_path}")
+
+    results = {
+        "dataset": args.dataset,
+        "k": args.k,
+        "run_seed": args.run_seed,
+        "epochs": args.epochs,
+        "checkpoint_path": ckpt_path,
+        "final_metrics": final_metrics,
+        "best_metrics": best_metrics,
+    }
+    results_path = os.path.join(
+        args.checkpoint_dir,
+        f"results_{args.dataset}_k{args.k}_seed{args.run_seed}.json",
+    )
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved results summary to {results_path}")
 
 
 if __name__ == "__main__":
