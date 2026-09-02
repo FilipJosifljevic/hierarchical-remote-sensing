@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))  # project root, so `from src...` resolves
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from src.data.datasets.ucm import UCMHMLCDataset
 from src.data.datamodule import split_train_test, sample_labeled_subset, SemiSupervisedUCM, make_semi_supervised_collate_fn
 from src.data.transforms.byol_augmentation import TwoViewTransform
@@ -46,8 +47,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_root", type=str, default="data/raw/UCMerced_LandUse/Images")
     parser.add_argument("--backbone_name", type=str, default="vit_small_patch16_224.dino",
-                         help="timm ViT variant -- vit_base_patch16_224.dino (paper's likely choice, "
-                              "slow on CPU) or vit_small_patch16_224.dino (~4x less compute, still DINO-pretrained)")
+                         help="timm ViT variant. DINO-pretrained variants (e.g. "
+                              "vit_base_patch16_224.dino) were used for the attention "
+                              "investigation (Sec 4.3-4.5) -- keep those checkpoints separate "
+                              "from any run using a plain, supervised-pretrained variant "
+                              "(e.g. vit_base_patch16_224, no .dino suffix), which is what the "
+                              "original paper's appendix specifies.")
     parser.add_argument("--labeled_fraction", type=float, default=0.10,
                          help="1.0 = fully supervised; paper uses 0.01/0.05/0.10/0.25")
     parser.add_argument("--split_seed", type=int, default=42, help="train/test split seed -- keep FIXED across all runs/variants you compare")
@@ -55,6 +60,10 @@ def main():
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--use_cosine_schedule", action="store_true",
+                         help="enable cosine annealing LR schedule (T_max=epochs, no warmup), "
+                              "matching the original paper's stated setup. Off by default so "
+                              "existing reproduction runs (which used a constant LR) are unaffected.")
     parser.add_argument("--lambda_diversity", type=float, default=0.0,
                          help="weight for the attention diversity auxiliary loss (0.0 = disabled, "
                               "matching all prior training runs). Start small, e.g. 0.05-0.1 -- this "
@@ -74,6 +83,10 @@ def main():
     parser.add_argument("--start_epoch", type=int, default=1,
                          help="which epoch number to resume FROM -- set this to (last saved epoch + 1) "
                               "when using --resume_from, so epoch numbering/checkpoint filenames stay consistent")
+    parser.add_argument("--run_tag", type=str, default=None,
+                         help="optional extra label included in checkpoint/results filenames, e.g. "
+                              "'matched' for a paper-matching-config run, to keep it clearly "
+                              "separate from your existing DINO-based checkpoints")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -81,6 +94,8 @@ def main():
 
     print(f"Device: {args.device}")
     print(f"Labeled fraction: {args.labeled_fraction} | split_seed={args.split_seed} | run_seed={args.run_seed}")
+    print(f"Backbone: {args.backbone_name} | cosine_schedule={args.use_cosine_schedule} | "
+          f"lambda_diversity={args.lambda_diversity}")
 
     base_dataset = UCMHMLCDataset(image_root=args.image_root, transform=None)
     num_labels = base_dataset.num_nodes
@@ -133,7 +148,15 @@ def main():
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
+    scheduler = None
+    if args.use_cosine_schedule:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
     # --- Training loop ---
+    final_metrics = None
+    best_auprc = -1.0
+    best_metrics = None
+
     for epoch in range(args.start_epoch, args.epochs + 1):
         model.train()
         epoch_losses = {"loss": 0.0, "L_s": 0.0, "L_g": 0.0, "L_b": 0.0, "L_div": 0.0}
@@ -162,30 +185,60 @@ def main():
             if num_labeled > 0:
                 n_batches_with_labels += 1
 
+        if scheduler is not None:
+            scheduler.step()
+
         avg = {k: v / n_batches for k, v in epoch_losses.items()}
+        current_lr = optimizer.param_groups[0]["lr"]
         print(f"Epoch {epoch}/{args.epochs} -- loss: {avg['loss']:.4f} "
               f"(L_s: {avg['L_s']:.4f}, L_g: {avg['L_g']:.4f}, L_b: {avg['L_b']:.4f}, L_div: {avg['L_div']:.4f}) "
-              f"[{n_batches_with_labels}/{n_batches} batches had labeled samples]")
+              f"[{n_batches_with_labels}/{n_batches} batches had labeled samples] [lr: {current_lr:.2e}]")
 
         if epoch % args.eval_every == 0 or epoch == args.epochs:
             metrics = evaluate(model, test_loader, args.device)
             print(f"  [eval @ epoch {epoch}] AUPRC: {metrics['auprc']:.4f}, "
                   f"Ranking Loss: {metrics['ranking_loss']:.4f}")
+            final_metrics = {"epoch": epoch, **metrics}
+            if metrics["auprc"] > best_auprc:
+                best_auprc = metrics["auprc"]
+                best_metrics = {"epoch": epoch, **metrics}
 
         if epoch % args.checkpoint_every == 0 and epoch != args.epochs:
+            tag = f"_{args.run_tag}" if args.run_tag else ""
             interim_path = os.path.join(
                 args.checkpoint_dir,
-                f"helm_frac{args.labeled_fraction}_seed{args.run_seed}_epoch{epoch}.pt",
+                f"helm_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{epoch}.pt",
             )
             torch.save(model.state_dict(), interim_path)
             print(f"  [checkpoint] saved to {interim_path}")
 
+    tag = f"_{args.run_tag}" if args.run_tag else ""
     ckpt_path = os.path.join(
         args.checkpoint_dir,
-        f"helm_frac{args.labeled_fraction}_seed{args.run_seed}_epoch{args.epochs}.pt",
+        f"helm_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{args.epochs}.pt",
     )
     torch.save(model.state_dict(), ckpt_path)
     print(f"\nSaved checkpoint to {ckpt_path}")
+
+    results = {
+        "labeled_fraction": args.labeled_fraction,
+        "run_seed": args.run_seed,
+        "backbone_name": args.backbone_name,
+        "use_cosine_schedule": args.use_cosine_schedule,
+        "lambda_diversity": args.lambda_diversity,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "checkpoint_path": ckpt_path,
+        "final_metrics": final_metrics,
+        "best_metrics": best_metrics,
+    }
+    results_path = os.path.join(
+        args.checkpoint_dir,
+        f"results_frac{args.labeled_fraction}_seed{args.run_seed}{tag}.json",
+    )
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved results summary to {results_path}")
 
 
 if __name__ == "__main__":
