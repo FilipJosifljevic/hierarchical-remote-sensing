@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import os
 import sys
@@ -9,8 +10,10 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[1])) 
 from src.data.datasets.ucm import UCMHMLCDataset
+from src.data.datasets.aid import AIDHMLCDataset
+from src.data.datasets.dfc15 import DFC15HMLCDataset
 from src.data.datamodule import split_train_test, sample_labeled_subset, SemiSupervisedUCM, make_semi_supervised_collate_fn
 from src.data.transforms.byol_augmentation import TwoViewTransform
 from src.utils.hierarchy import build_edge_index
@@ -20,6 +23,12 @@ from src.models.helm.helm_model import HELM
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
+DATASET_SPLIT_DEFAULTS = {
+    "ucm": (1667, 433),
+    "aid": (2400, 600),
+    "dfc15": (2674, 668),
+}
+
 
 def build_plain_transform(image_size: int = 224) -> transforms.Compose:
     return transforms.Compose([
@@ -27,6 +36,37 @@ def build_plain_transform(image_size: int = 224) -> transforms.Compose:
         transforms.ToTensor(),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ])
+
+
+def build_dataset(args):
+    if args.dataset == "ucm":
+        image_root = args.image_root or "data/raw/UCMerced_LandUse/Images"
+        return UCMHMLCDataset(image_root=image_root, transform=None)
+
+    elif args.dataset == "aid":
+        image_root = args.image_root or "data/raw/AID_Dataset"
+        labels_csv = args.labels_csv or "data/raw/AID_Dataset/multilabel.csv"
+        ucm_dataset = UCMHMLCDataset(image_root=args.ucm_image_root, transform=None)
+        return AIDHMLCDataset(
+            image_root=image_root, labels_csv=labels_csv,
+            ucm_node_names=ucm_dataset.node_names, ucm_parent=ucm_dataset.parent,
+            ucm_depth=ucm_dataset.depth, transform=None,
+        )
+
+    elif args.dataset == "dfc15":
+        image_root = args.image_root or "data/raw/DFC15_Dataset"
+        labels_csv = args.labels_csv or "data/raw/DFC15_Dataset/multilabel.csv"
+        return DFC15HMLCDataset(
+            image_root=image_root, labels_csv=labels_csv, transform=None,
+            subset_threshold=args.subset_threshold,
+        )
+
+    else:
+        raise ValueError(f"Unknown dataset '{args.dataset}'")
+
+
+def strip_byol_for_inference(state_dict: dict) -> dict:
+    return {k: v for k, v in state_dict.items() if not k.startswith("byol_branch.")}
 
 
 def evaluate(model: HELM, test_loader: DataLoader, device: str) -> dict:
@@ -45,7 +85,17 @@ def evaluate(model: HELM, test_loader: DataLoader, device: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image_root", type=str, default="data/raw/UCMerced_LandUse/Images")
+    parser.add_argument("--dataset", type=str, default="ucm", choices=["ucm", "aid", "dfc15"])
+    parser.add_argument("--image_root", type=str, default=None,
+                         help="defaults per dataset if not set -- see build_dataset()")
+    parser.add_argument("--labels_csv", type=str, default=None, help="for --dataset aid or dfc15")
+    parser.add_argument("--ucm_image_root", type=str, default="data/raw/UCMerced_LandUse/Images",
+                         help="only for --dataset aid -- needed to build the hierarchy AID reuses")
+    parser.add_argument("--subset_threshold", type=float, default=0.95,
+                         help="only for --dataset dfc15 -- see DFC15HMLCDataset docstring for "
+                              "why 0.95 is the chosen default, not 1.0")
+    parser.add_argument("--n_train", type=int, default=None, help="overrides the dataset's default split")
+    parser.add_argument("--n_test", type=int, default=None, help="overrides the dataset's default split")
     parser.add_argument("--backbone_name", type=str, default="vit_small_patch16_224.dino",
                          help="timm ViT variant. DINO-pretrained variants (e.g. "
                               "vit_base_patch16_224.dino) were used for the attention "
@@ -92,17 +142,21 @@ def main():
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-    print(f"Device: {args.device}")
+    n_train_default, n_test_default = DATASET_SPLIT_DEFAULTS[args.dataset]
+    n_train = args.n_train or n_train_default
+    n_test = args.n_test or n_test_default
+
+    print(f"Device: {args.device} | Dataset: {args.dataset}")
     print(f"Labeled fraction: {args.labeled_fraction} | split_seed={args.split_seed} | run_seed={args.run_seed}")
     print(f"Backbone: {args.backbone_name} | cosine_schedule={args.use_cosine_schedule} | "
           f"lambda_diversity={args.lambda_diversity}")
 
-    base_dataset = UCMHMLCDataset(image_root=args.image_root, transform=None)
+    base_dataset = build_dataset(args)
     num_labels = base_dataset.num_nodes
     edge_index = build_edge_index(base_dataset.parent, base_dataset.node_names)
 
     train_indices, test_indices = split_train_test(
-        num_samples=len(base_dataset), n_train=1667, n_test=433, seed=args.split_seed
+        num_samples=len(base_dataset), n_train=n_train, n_test=n_test, seed=args.split_seed
     )
 
     if args.labeled_fraction < 1.0:
@@ -120,8 +174,7 @@ def main():
     train_dataset = SemiSupervisedUCM(
         base_dataset, train_indices, labeled_indices, plain_transform, byol_transform
     )
-    # Test set: labeled_indices=None -> ALL of test_indices treated as labeled
-    # (we need ground truth for every test sample to compute metrics).
+
     test_dataset = SemiSupervisedUCM(
         base_dataset, test_indices, None, plain_transform, byol_transform
     )
@@ -141,10 +194,6 @@ def main():
         state_dict = torch.load(args.resume_from, map_location=args.device)
         model.load_state_dict(state_dict)
         print(f"Resumed model weights from {args.resume_from} (optimizer state and epoch count NOT restored -- see --resume_from help)")
-    # Filter to trainable params only: model.parameters() also includes the BYOL
-    # target network's FROZEN parameters (requires_grad=False). Most optimizers
-    # silently skip params with no gradient, so including them wouldn't crash --
-    # but being explicit here avoids relying on that implicit behavior.
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
@@ -156,6 +205,7 @@ def main():
     final_metrics = None
     best_auprc = -1.0
     best_metrics = None
+    best_ckpt_path = None
 
     for epoch in range(args.start_epoch, args.epochs + 1):
         model.train()
@@ -202,12 +252,20 @@ def main():
             if metrics["auprc"] > best_auprc:
                 best_auprc = metrics["auprc"]
                 best_metrics = {"epoch": epoch, **metrics}
+                # Overwrite a SINGLE best-checkpoint file each time -- we don't
+                # want to accumulate one file per "new best so far" milestone.
+                tag = f"_{args.run_tag}" if args.run_tag else ""
+                best_ckpt_path = os.path.join(
+                    args.checkpoint_dir,
+                    f"helm_{args.dataset}_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_best.pt",
+                )
+                torch.save(strip_byol_for_inference(model.state_dict()), best_ckpt_path)
 
         if epoch % args.checkpoint_every == 0 and epoch != args.epochs:
             tag = f"_{args.run_tag}" if args.run_tag else ""
             interim_path = os.path.join(
                 args.checkpoint_dir,
-                f"helm_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{epoch}.pt",
+                f"helm_{args.dataset}_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{epoch}.pt",
             )
             torch.save(model.state_dict(), interim_path)
             print(f"  [checkpoint] saved to {interim_path}")
@@ -215,12 +273,30 @@ def main():
     tag = f"_{args.run_tag}" if args.run_tag else ""
     ckpt_path = os.path.join(
         args.checkpoint_dir,
-        f"helm_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{args.epochs}.pt",
+        f"helm_{args.dataset}_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch{args.epochs}_final.pt",
     )
-    torch.save(model.state_dict(), ckpt_path)
-    print(f"\nSaved checkpoint to {ckpt_path}")
+    torch.save(strip_byol_for_inference(model.state_dict()), ckpt_path)
+    print(f"\nSaved final checkpoint to {ckpt_path}")
+    print("  NOTE: this checkpoint is BYOL-stripped (no target network/projector/predictor). "
+          "Load it with model.load_state_dict(state_dict, strict=False) -- NOT the default "
+          "strict=True, which will raise a missing-keys error. Do not use this checkpoint "
+          "with --resume_from.")
+
+    interim_pattern = os.path.join(
+        args.checkpoint_dir,
+        f"helm_{args.dataset}_frac{args.labeled_fraction}_seed{args.run_seed}{tag}_epoch*.pt",
+    )
+    removed = 0
+    for f in glob.glob(interim_pattern):
+        if f != ckpt_path and f != best_ckpt_path:
+            os.remove(f)
+            removed += 1
+    if removed:
+        print(f"Removed {removed} interim checkpoint(s), kept final"
+              f"{' and best' if best_ckpt_path and best_ckpt_path != ckpt_path else ''} only.")
 
     results = {
+        "dataset": args.dataset,
         "labeled_fraction": args.labeled_fraction,
         "run_seed": args.run_seed,
         "backbone_name": args.backbone_name,
@@ -228,13 +304,16 @@ def main():
         "lambda_diversity": args.lambda_diversity,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
-        "checkpoint_path": ckpt_path,
+        "n_train": n_train,
+        "n_test": n_test,
+        "checkpoint_path_final": ckpt_path,
+        "checkpoint_path_best": best_ckpt_path,
         "final_metrics": final_metrics,
         "best_metrics": best_metrics,
     }
     results_path = os.path.join(
         args.checkpoint_dir,
-        f"results_frac{args.labeled_fraction}_seed{args.run_seed}{tag}.json",
+        f"results_{args.dataset}_frac{args.labeled_fraction}_seed{args.run_seed}{tag}.json",
     )
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)

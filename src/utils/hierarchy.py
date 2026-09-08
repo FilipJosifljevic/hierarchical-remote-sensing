@@ -11,6 +11,7 @@ def infer_parents(
     label_matrix: np.ndarray,
     label_names: Sequence[str],
     candidate_ancestor_names: "set[str] | None" = None,
+    subset_threshold: float = 1.0,
 ) -> Dict[str, List[str]]:
     n_labels = label_matrix.shape[1]
     positive_sets = [set(np.nonzero(label_matrix[:, i])[0].tolist()) for i in range(n_labels)]
@@ -21,7 +22,10 @@ def infer_parents(
             continue
         if candidate_ancestor_names is not None and label_names[j] not in candidate_ancestor_names:
             continue
-        if positive_sets[i] <= positive_sets[j] and positive_sets[j] != positive_sets[i]:
+        if len(positive_sets[j]) <= len(positive_sets[i]):
+            continue  # a valid ancestor must have a strictly larger positive set
+        containment_fraction = len(positive_sets[i] & positive_sets[j]) / len(positive_sets[i])
+        if containment_fraction >= subset_threshold:
             ancestors[label_names[i]].append(label_names[j])
     return ancestors
 
@@ -70,8 +74,10 @@ def build_hierarchy(
     label_names: Sequence[str],
     category_names: "set[str] | None" = None,
     manual_overrides: "Dict[str, str] | None" = None,
+    subset_threshold: float = 1.0,
 ) -> Tuple[Dict[str, str], Dict[str, int]]:
-    ancestors = infer_parents(label_matrix, label_names, candidate_ancestor_names=category_names)
+    ancestors = infer_parents(label_matrix, label_names, candidate_ancestor_names=category_names,
+                               subset_threshold=subset_threshold)
     positive_counts = {name: int(label_matrix[:, i].sum()) for i, name in enumerate(label_names)}
     parent, ties = direct_parent(ancestors, positive_counts)
     if ties:
