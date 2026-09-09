@@ -54,8 +54,8 @@ def build_dataset(args):
         )
 
     elif args.dataset == "dfc15":
-        image_root = args.image_root or "data/raw/DFC15_Dataset"
-        labels_csv = args.labels_csv or "data/raw/DFC15_Dataset/multilabel.csv"
+        image_root = args.image_root or "data/raw/DFC15_multilabel"
+        labels_csv = args.labels_csv or "data/raw/DFC15_multilabel/multilabel.csv"
         return DFC15HMLCDataset(
             image_root=image_root, labels_csv=labels_csv, transform=None,
             subset_threshold=args.subset_threshold,
