@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend -- avoids crashing in headless/SSH environments with no display
+matplotlib.use("Agg") 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch

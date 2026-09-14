@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-sys.path.append(str(Path(__file__).resolve().parents[3]))  # project root, so `from src.utils...` resolves
+sys.path.append(str(Path(__file__).resolve().parents[3])) 
 from src.utils.hierarchy import build_hierarchy
 
 UCM_HMLC_HF_URL = (

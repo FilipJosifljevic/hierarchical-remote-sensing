@@ -1,9 +1,3 @@
-"""
-Standalone smoke test for the encoder + graph branch together.
-Run from the project ROOT (not src/models/helm/, since this needs `from src....` imports):
-
-    python3 src/models/helm/test_graph_branch.py
-"""
 import torch
 import sys
 from pathlib import Path

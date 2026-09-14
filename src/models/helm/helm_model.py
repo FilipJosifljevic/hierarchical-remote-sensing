@@ -6,7 +6,7 @@ import torch.nn as nn
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parents[3]))  # project root, so `from src...` resolves
+sys.path.append(str(Path(__file__).resolve().parents[3]))
 from src.models.helm.encoder import HierarchyTokenViT
 from src.models.helm.classification_branch import ClassificationBranch
 from src.models.helm.graph_branch import GraphBranch
