@@ -18,7 +18,7 @@ Implementation of **HELM** (Hierarchical and Explicit Label Modeling with Graph 
 | **AID** | 3,000 | 17 (identical to UCM) | Reuses UCM-HMLC's hierarchy directly | 2400 / 600 |
 | **DFC-15** | 3,342 | 8 | 8 nodes, 2 levels (independently inferred — see note below) | 2673 / 669 |
 
-- UCM-HMLC: (https://github.com/masakulaYOU/UCMerced_LandUse); hierarchical labels auto-download on first use.
+- UCM-HMLC: [Hua-YS/AID-Multilabel-Dataset](https://github.com/masakulaYOU/UCMerced_LandUse); hierarchical labels auto-download on first use.
 - AID (multi-label): [Hua-YS/AID-Multilabel-Dataset](https://github.com/Hua-YS/AID-Multilabel-Dataset)
 - DFC-15 (multi-label): [Hua-YS/DFC15-Multilabel-Dataset](https://github.com/Hua-YS/DFC15-Multilabel-Dataset)
 
